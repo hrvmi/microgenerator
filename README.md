@@ -1,24 +1,37 @@
 # MicroGenerator
 
-A simple web app for generating micro patterns and exporting them as images.
+A small browser-based generative design tool for creating and exporting procedural micro-patterns.
 
-## How to open the app
+I designed and built the interface and the underlying generator in HTML, CSS, and JavaScript. The goal was to make a visual system that feels more like a design instrument than a conventional form: adjust parameters, generate a composition, and export the result.
 
-1. Open this folder on your computer.
-2. Double-click `index.html` — it will open in your web browser (Chrome, Safari, Firefox, etc.).
-3. That's it! No installation needed.
+## What it does
 
-## What's in this folder?
+- Generates procedural micro-patterns in the browser
+- Adjusts density, scale, complexity, and contrast
+- Supports different aspect ratios
+- Generates previews in real time
+- Exports generated patterns as images
+- Runs entirely in the browser with no installation required
 
-| File | What it does |
-|------|--------------|
-| `index.html` | The structure of the page — title, sliders, preview box, buttons |
-| `styles.css` | The look — colors, spacing, fonts, layout |
-| `app.js` | The behavior — sliders update numbers, Generate creates a pattern, Download saves it |
+## Built with
 
-## How to use
+- HTML
+- CSS
+- JavaScript
+- Canvas API
 
-1. Adjust the sliders on the left (Density, Scale, Complexity, Contrast).
-2. Pick an aspect ratio and export format on the right.
-3. Click **Generate** to create a preview in the center.
-4. Click **Download** to save the image to your computer.
+## Why I built it
+
+MicroGenerator started as an experiment in generative visual design and in exploring how much of the design process I could bring directly into code.
+
+Instead of designing a static set of patterns and handing them off for implementation, I built the underlying system so the visual rules themselves could become interactive.
+
+## Run locally
+
+Clone the repository and open `index.html` in a browser.
+
+No build step or dependencies are required.
+
+## Status
+
+This is an ongoing experiment and the system is being expanded toward a more flexible generative composition tool.
