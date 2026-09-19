@@ -550,7 +550,8 @@ function composeVoronoi({ complexity, scale, seed }) {
     }
   }
 
-  return { elements, negativeSpace, grid: { cols: gridCols, rows: gridRows } };
+  // Return boundary grid for edge signal in field builder
+  return { elements, negativeSpace, grid: { cols: gridCols, rows: gridRows }, boundaries: boundaryGrid };
 }
 
 function composeFlowField({ complexity, scale, seed }) {
@@ -660,10 +661,9 @@ function composeReactionDiffusion({ complexity, scale, seed }) {
   const gridCols = 48 + Math.floor(complexity * 40);
   const gridRows = Math.max(36, Math.floor(gridCols * 0.75));
 
-  // Parameters - vary with seed and complexity for pattern diversity
-  // Feed rate F and kill rate k determine pattern type
-  const F = 0.022 + noise2D(seed + 100, 200, 400) * 0.018; // 0.022-0.04
-  const k = 0.051 + noise2D(seed + 300, 400, 500) * 0.015; // 0.051-0.066
+  // Parameters for spot patterns (F=0.024-0.03, k=0.053-0.057) - tighter ranges for stability
+  const F = 0.024 + noise2D(seed + 100, 200, 400) * 0.006; // 0.024-0.03
+  const k = 0.053 + noise2D(seed + 300, 400, 500) * 0.004; // 0.053-0.057
   const Du = 0.16 + noise2D(seed + 500, 600, 700) * 0.04;  // U diffusion
   const Dv = 0.08 + noise2D(seed + 700, 800, 900) * 0.02;  // V diffusion
 
@@ -892,7 +892,34 @@ regionId++;
     });
   }
 
-  return { elements, negativeSpace, grid: { cols: gridCols, rows: gridRows } };
+  // Compute boundaries from V field gradients for edge signal
+  const boundaries = [];
+  for (let r = 0; r < gridRows; r++) {
+    boundaries.push(new Array(gridCols).fill(0));
+  }
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      let isBoundary = false;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols) {
+            const diff = Math.abs(V[nr][nc] - V[r][c]);
+            if (diff > 0.08) {
+              isBoundary = true;
+              break;
+            }
+          }
+        }
+        if (isBoundary) break;
+      }
+      boundaries[r][c] = isBoundary ? 1 : 0;
+    }
+  }
+
+  return { elements, negativeSpace, grid: { cols: gridCols, rows: gridRows }, boundaries };
 }
 
 function composeDLA({ complexity, scale, seed }) {
@@ -917,8 +944,8 @@ function composeDLA({ complexity, scale, seed }) {
   seeds.push({ x: cx, y: cy });
 
   // Random walkers - classic DLA: start from edges, walk inward
-  const walkerCount = 1000 + Math.floor(complexity * 1000);
-  const maxWalkSteps = 400 + Math.floor(complexity * 400);
+  const walkerCount = 600 + Math.floor(complexity * 600) + Math.floor(scale * 800);
+  const maxWalkSteps = 250 + Math.floor(complexity * 250) + Math.floor(scale * 300);
   const sticky = 0.25;
 
   for (let w = 0; w < walkerCount; w++) {
@@ -1203,6 +1230,18 @@ function buildFieldFromComposition(composition, cols, rows, contrast) {
         }
       }
 
+      // Add edge signal from composition boundaries (Voronoi, etc.)
+      let boundaryEdge = 0;
+      if (composition.boundaries && composition.grid) {
+        const gc = Math.round(u * (composition.grid.cols - 1));
+        const gr = Math.round(v * (composition.grid.rows - 1));
+        if (gr >= 0 && gr < composition.grid.rows && gc >= 0 && gc < composition.grid.cols) {
+          if (composition.boundaries[gr][gc]) {
+            boundaryEdge = 1;
+          }
+        }
+      }
+
       const normalizedTone = weightAccum > 0 ? toneAccum / weightAccum : 0;
       let finalTone = clamp(0.5 + normalizedTone * 0.5, 0, 1);
 
@@ -1215,6 +1254,9 @@ function buildFieldFromComposition(composition, cols, rows, contrast) {
 
       const finalEdge = clamp(edgeWeight > 0 ? edgeSignal / edgeWeight : 0, 0, 1);
 
+      // Combine element edges with composition boundaries
+      const combinedEdge = Math.max(finalEdge, boundaryEdge);
+
       // Apply contrast to tone (affects renderer density gates)
       const contrastFactor = 0.5 + contrast * 1.5;
       finalTone = clamp((finalTone - 0.5) * contrastFactor + 0.5, 0, 1);
@@ -1226,7 +1268,7 @@ function buildFieldFromComposition(composition, cols, rows, contrast) {
 
       tone[index] = finalTone;
       accent[index] = finalAccent;
-      edge[index] = finalEdge;
+      edge[index] = combinedEdge;
       coverage[index] = finalCoverage;
       hue[index] = finalHue;
       saturation[index] = finalSat;
