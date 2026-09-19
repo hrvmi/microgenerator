@@ -403,7 +403,8 @@ function composeVoronoi({ complexity, scale, seed }) {
   const elements = [];
   const negativeSpace = [];
 
-  const pointCount = 20 + Math.floor(complexity * 40);
+  // Number of seed points - scales with complexity and scale
+  const pointCount = Math.max(6, 8 + Math.floor(complexity * 24) + Math.floor(scale * 20));
   const points = [];
 
   for (let i = 0; i < pointCount; i++) {
@@ -414,33 +415,128 @@ function composeVoronoi({ complexity, scale, seed }) {
     });
   }
 
-  // Cellular approximation: for each grid cell, find nearest point
-  // Create cells as elements
-  const gridCols = 24 + Math.floor(complexity * 16);
-  const gridRows = Math.max(12, Math.floor(gridCols * 0.75));
+  // Grid for Voronoi computation - resolution affects cell detail
+  const gridCols = 32 + Math.floor(complexity * 24);
+  const gridRows = Math.max(18, Math.floor(gridCols * 0.75));
+
+  // Compute Voronoi assignment for each grid cell
+  // Each cell belongs to the nearest point (with weight scaling)
+  const cellToPoint = [];
+  for (let r = 0; r < gridRows; r++) {
+    cellToPoint.push(new Array(gridCols).fill(-1));
+  }
+
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      const u = c / (gridCols - 1);
+      const v = r / (gridRows - 1);
+      let bestDist = Infinity;
+      let bestIdx = -1;
+
+      for (let i = 0; i < pointCount; i++) {
+        const p = points[i];
+        const dx = u - p.x;
+        const dy = v - p.y;
+        // Weighted distance - higher weight = smaller effective distance
+        const dist = (dx * dx + dy * dy) / (p.weight + 0.1);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = i;
+        }
+      }
+      cellToPoint[r][c] = bestIdx;
+    }
+  }
+
+  // Find boundaries between different cells
+  const boundaryGrid = [];
+  for (let r = 0; r < gridRows; r++) {
+    boundaryGrid.push(new Array(gridCols).fill(0));
+  }
+
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      const pid = cellToPoint[r][c];
+      let isBoundary = false;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols) {
+            if (cellToPoint[nr][nc] !== pid) {
+              isBoundary = true;
+              break;
+            }
+          }
+        }
+        if (isBoundary) break;
+      }
+      boundaryGrid[r][c] = isBoundary ? 1 : 0;
+    }
+  }
+
+  // Find connected regions for each point (actual Voronoi cells)
+  const visited = [];
+  for (let r = 0; r < gridRows; r++) {
+    visited.push(new Array(gridCols).fill(false));
+  }
 
   const baseHue = hueFromSeed(seed + 102);
+  let regionId = 0;
 
   for (let i = 0; i < pointCount; i++) {
-    const point = points[i];
-    const area = 0.05 + point.weight * 0.15 * (0.5 + scale * 0.5);
+    // Find all cells belonging to this point
+    const cellCoords = [];
+    for (let r = 0; r < gridRows; r++) {
+      for (let c = 0; c < gridCols; c++) {
+        if (cellToPoint[r][c] === i) {
+          cellCoords.push({ r, c });
+        }
+      }
+    }
+
+    if (cellCoords.length < 3) continue;
+
+    // Compute centroid and bounds
+    const cx = cellCoords.reduce((sum, cell) => sum + cell.c, 0) / cellCoords.length / gridCols;
+    const cy = cellCoords.reduce((sum, cell) => sum + cell.r, 0) / cellCoords.length / gridRows;
+    
+    let minR = gridRows, maxR = 0, minC = gridCols, maxC = 0;
+    for (const cell of cellCoords) {
+      minR = Math.min(minR, cell.r);
+      maxR = Math.max(maxR, cell.r);
+      minC = Math.min(minC, cell.c);
+      maxC = Math.max(maxC, cell.c);
+    }
+    const width = (maxC - minC + 1) / gridCols;
+    const height = (maxR - minR + 1) / gridRows;
+
+    // Count boundary cells for edge detail
+    let boundaryCount = 0;
+    for (const cell of cellCoords) {
+      if (boundaryGrid[cell.r][cell.c]) boundaryCount++;
+    }
+    const edgeFactor = boundaryCount / cellCoords.length;
+
     const hue = baseHue + (noise2D(i + 40, 400, seed + i * 89 + 200) - 0.5) * 0.5;
 
     elements.push({
       type: "cell",
-      x: point.x - area / 2,
-      y: point.y - area / 2,
-      width: area,
-      height: area,
-      density: point.weight,
-      hue: (hue % 1 + 1) % 1,
+      x: cx - width / 2,
+      y: cy - height / 2,
+      width: width * 0.95,
+      height: height * 0.95,
+      density: 0.5 + noise2D(i + 50, 500, seed + i * 97 + 200) * 0.4,
+      hue: (baseHue + noise2D(i + 40, 400, seed + i * 89 + 200) * 0.5) % 1,
       saturation: 0.4 + noise2D(i + 50, 500, seed + i * 97 + 200) * 0.5,
       rotation: noise2D(i + 60, 600, seed + i * 101 + 200) * Math.PI * 2,
-      strength: 0.6 + point.weight * 0.4,
+      strength: 0.6 + (1 - edgeFactor) * 0.4,
     });
+    regionId++;
   }
 
-  // Suppress some cells for negative space
+  // Negative space: suppress some cells
   const suppressCount = Math.floor(pointCount * (0.1 + complexity * 0.15));
   for (let i = 0; i < suppressCount; i++) {
     const idx = Math.floor(noise2D(i + 700, 700, seed + i * 103 + 200) * pointCount);
