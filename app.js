@@ -555,80 +555,131 @@ function composeReactionDiffusion({ complexity, scale, seed }) {
   const elements = [];
   const negativeSpace = [];
 
-  // Grid-based cellular growth simulation
-  const gridCols = 24 + Math.floor(complexity * 20);
-  const gridRows = Math.max(18, Math.floor(gridCols * 0.75));
+  // Gray-Scott reaction-diffusion model (lightweight)
+  // Produces cellular/organic patterns: spots, stripes, labyrinths
+  // Based on: U + 2V -> 3V (reaction), U' = -UV^2 + F(1-U), V' = UV^2 - (F+k)V
+  // Diffusion: U diffuses faster than V
 
-  // Initialize grid with seed points (activators)
-  let grid = [];
+  // Grid size - larger for more detail
+  const gridCols = 48 + Math.floor(complexity * 40);
+  const gridRows = Math.max(36, Math.floor(gridCols * 0.75));
+
+  // Parameters - vary with seed and complexity for pattern diversity
+  // Feed rate F and kill rate k determine pattern type
+  const F = 0.022 + noise2D(seed + 100, 200, 400) * 0.018; // 0.022-0.04
+  const k = 0.051 + noise2D(seed + 300, 400, 500) * 0.015; // 0.051-0.066
+  const Du = 0.16 + noise2D(seed + 500, 600, 700) * 0.04;  // U diffusion
+  const Dv = 0.08 + noise2D(seed + 700, 800, 900) * 0.02;  // V diffusion
+
+  // Initialize U and V grids
+  const U = [];
+  const V = [];
   for (let r = 0; r < gridRows; r++) {
-    grid.push(new Array(gridCols).fill(0));
+    U.push(new Array(gridCols).fill(1.0)); // U starts at 1
+    V.push(new Array(gridCols).fill(0.0)); // V starts at 0
   }
 
-   // Place initial seeds - spread across the grid using a grid of quadrants
-  const seedCount = 2 + Math.floor(complexity * 5);
-  const seedPoints = [];
-  const quadGrid = Math.ceil(Math.sqrt(seedCount));
-  const cellW = gridCols / quadGrid;
-  const cellH = gridRows / quadGrid;
+  // Seed with random perturbations
+  const seedCount = 8 + Math.floor(complexity * 12);
   for (let i = 0; i < seedCount; i++) {
-    const qCol = i % quadGrid;
-    const qRow = Math.floor(i / quadGrid);
-    const sx = Math.floor((qCol + 0.3 + noise2D(i + 10, 100, seed + i * 37 + 400) * 0.4) * cellW);
-    const sy = Math.floor((qRow + 0.3 + noise2D(i + 20, 200, seed + i * 53 + 400) * 0.4) * cellH);
-    grid[sy][sx] = 1;
-    seedPoints.push({ x: sx, y: sy });
-  }
-
-  // Grow - expand activator regions with controlled probability
-  // Higher complexity = more seeds but tighter growth to prevent merging
-  const growthSteps = 2 + Math.floor(complexity * 4);
-  const growThreshold = 0.72 - complexity * 0.15;
-  for (let step = 0; step < growthSteps; step++) {
-    const newGrid = [];
-    for (let r = 0; r < gridRows; r++) {
-      newGrid.push(grid[r].slice());
-    }
-
-    for (let r = 0; r < gridRows; r++) {
-      for (let c = 0; c < gridCols; c++) {
-        if (grid[r][c] > 0) {
-          for (let dr = -1; dr <= 1; dr++) {
-            for (let dc = -1; dc <= 1; dc++) {
-              if (dr === 0 && dc === 0) continue;
-              const nr = r + dr;
-              const nc = c + dc;
-              if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols) {
-                if (grid[nr][nc] === 0) {
-                  const growProb = 0.2 + noise2D(nr + 100, nc + 200, seed + step * 43 + 400);
-                  if (growProb > growThreshold + step * 0.03) {
-                    newGrid[nr][nc] = 1;
-                  }
-                }
-              }
-            }
+    const cx = Math.floor(noise2D(i + 10, 100, seed + i * 37 + 400) * (gridCols - 4)) + 2;
+    const cy = Math.floor(noise2D(i + 20, 200, seed + i * 53 + 400) * (gridRows - 4)) + 2;
+    const radius = 2 + Math.floor(complexity * 3);
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx >= 0 && nx < gridCols && ny >= 0 && ny < gridRows) {
+          if (dx * dx + dy * dy <= radius * radius) {
+            U[ny][nx] = 0.5 + noise2D(i + 100, 200, seed + i * 71) * 0.3;
+            V[ny][nx] = 0.25 + noise2D(i + 300, 400, seed + i * 89) * 0.15;
           }
         }
       }
     }
-    grid = newGrid;
   }
 
-  // Extract regions from grid
+  // Run reaction-diffusion simulation
+  // Scale controls simulation steps (time)
+  const simSteps = 400 + Math.floor(complexity * 600) + Math.floor(scale * 400);
+  const dt = 1.0;
+
+  // Laplacian kernel weights
+  const lapWeights = [
+    [0.05, 0.2, 0.05],
+    [0.2, -1.0, 0.2],
+    [0.05, 0.2, 0.05]
+  ];
+
+  for (let step = 0; step < simSteps; step++) {
+    const newU = [];
+    const newV = [];
+
+    for (let r = 0; r < gridRows; r++) {
+      newU.push(new Array(gridCols));
+      newV.push(new Array(gridCols));
+    }
+
+    for (let r = 0; r < gridRows; r++) {
+      for (let c = 0; c < gridCols; c++) {
+        // Laplacian of U (with periodic boundary conditions)
+        let lapU = 0, lapV = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const nr = (r + dr + gridRows) % gridRows;
+            const nc = (c + dc + gridCols) % gridCols;
+            const w = lapWeights[dr + 1][dc + 1];
+            lapU += U[nr][nc] * w;
+            lapV += V[nr][nc] * w;
+          }
+        }
+
+        const u = U[r][c];
+        const v = V[r][c];
+        const uvv = u * v * v;
+
+        // Gray-Scott equations
+        newU[r][c] = u + (Du * lapU - uvv + F * (1 - u)) * dt;
+        newV[r][c] = v + (Dv * lapV + uvv - (F + k) * v) * dt;
+
+        // Clamp
+        if (newU[r][c] < 0) newU[r][c] = 0;
+        if (newU[r][c] > 1) newU[r][c] = 1;
+        if (newV[r][c] < 0) newV[r][c] = 0;
+        if (newV[r][c] > 1) newV[r][c] = 1;
+      }
+    }
+
+    // Swap
+    for (let r = 0; r < gridRows; r++) {
+      U[r] = newU[r];
+      V[r] = newV[r];
+    }
+  }
+
+  // Extract patterns from V field (inhibitor forms patterns)
+  // Use multiple thresholds to capture different pattern features
   const visited = [];
   for (let r = 0; r < gridRows; r++) {
     visited.push(new Array(gridCols).fill(false));
   }
 
-  const baseHue = hueFromSeed(seed + 104);
-  const baseSat = satFromSeed(seed + 204);
+  // Multi-threshold extraction matching actual V range (~0.1-0.26)
+  const thresholds = [
+    0.22 + noise2D(seed + 1000, 2000, 3000) * 0.05,  // high V spots
+    0.16 + noise2D(seed + 2000, 3000, 4000) * 0.05,  // intermediate
+    0.10 + noise2D(seed + 3000, 4000, 5000) * 0.05   // background boundaries
+  ];
 
-  // Find connected regions using flood fill
+  const baseHue = hueFromSeed(seed + 104);
   let regionId = 0;
-  for (let r = 0; r < gridRows; r++) {
-    for (let c = 0; c < gridCols; c++) {
-      if (grid[r][c] > 0 && !visited[r][c]) {
-        // Flood fill
+
+  for (let ti = 0; ti < thresholds.length; ti++) {
+    const threshold = thresholds[ti];
+    for (let r = 0; r < gridRows; r++) {
+      for (let c = 0; c < gridCols; c++) {
+        if (V[r][c] > threshold && !visited[r][c]) {
+        // Flood fill to find connected region
         const regionCells = [];
         const stack = [{ r, c }];
         visited[r][c] = true;
@@ -639,11 +690,10 @@ function composeReactionDiffusion({ complexity, scale, seed }) {
 
           for (let dr = -1; dr <= 1; dr++) {
             for (let dc = -1; dc <= 1; dc++) {
-              if (dr === 0 && dc === 0) continue;
               const nr = cell.r + dr;
               const nc = cell.c + dc;
               if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols) {
-                if (grid[nr][nc] > 0 && !visited[nr][nc]) {
+                if (V[nr][nc] > threshold && !visited[nr][nc]) {
                   visited[nr][nc] = true;
                   stack.push({ r: nr, c: nc });
                 }
@@ -652,7 +702,8 @@ function composeReactionDiffusion({ complexity, scale, seed }) {
           }
         }
 
-        if (regionCells.length > 1) {
+        // Minimum size filter
+        if (regionCells.length > 4) {
           const cx = regionCells.reduce((sum, cell) => sum + cell.c, 0) / regionCells.length / gridCols;
           const cy = regionCells.reduce((sum, cell) => sum + cell.r, 0) / regionCells.length / gridRows;
           const size = Math.sqrt(regionCells.length / (gridCols * gridRows));
@@ -663,12 +714,71 @@ function composeReactionDiffusion({ complexity, scale, seed }) {
             x: cx - size / 2,
             y: cy - size / 2,
             width: size,
+            height: size * (0.7 + noise2D(regionId + 60, 600, seed + regionId * 71 + 400) * 0.5),
+            density: 0.5 + noise2D(regionId + 70, 700, seed + regionId * 89 + 400) * 0.5,
+            hue: (hue % 1 + 1) % 1,
+            saturation: 0.45 + noise2D(regionId + 80, 800, seed + regionId * 97 + 400) * 0.4,
+            rotation: noise2D(regionId + 90, 900, seed + regionId * 101 + 400) * Math.PI * 2,
+            strength: 0.5 + noise2D(regionId + 100, 1000, seed + regionId * 109 + 400) * 0.5,
+          });
+regionId++;
+        }
+      }
+    }
+    }
+  }
+
+  // Also extract U patterns (activator) for additional structure
+  // Reset visited for U field
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      visited[r][c] = false;
+    }
+  }
+
+  const uThreshold = 0.5 + noise2D(seed + 2000, 3000, 4000) * 0.2;
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      if (U[r][c] > uThreshold && !visited[r][c]) {
+        const regionCells = [];
+        const stack = [{ r, c }];
+        visited[r][c] = true;
+
+        while (stack.length > 0) {
+          const cell = stack.pop();
+          regionCells.push(cell);
+
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              const nr = cell.r + dr;
+              const nc = cell.c + dc;
+              if (nr >= 0 && nr < gridRows && nc >= 0 && nc < gridCols) {
+                if (U[nr][nc] > uThreshold && !visited[nr][nc]) {
+                  visited[nr][nc] = true;
+                  stack.push({ r: nr, c: nc });
+                }
+              }
+            }
+          }
+        }
+
+        if (regionCells.length > 3) {
+          const cx = regionCells.reduce((sum, cell) => sum + cell.c, 0) / regionCells.length / gridCols;
+          const cy = regionCells.reduce((sum, cell) => sum + cell.r, 0) / regionCells.length / gridRows;
+          const size = Math.sqrt(regionCells.length / (gridCols * gridRows)) * 0.7;
+          const hue = baseHue + (noise2D(regionId + 50, 500, seed + regionId * 61 + 400) - 0.5) * 0.3;
+
+          elements.push({
+            type: "cell",
+            x: cx - size / 2,
+            y: cy - size / 2,
+            width: size,
             height: size * (0.8 + noise2D(regionId + 60, 600, seed + regionId * 71 + 400) * 0.4),
-            density: 0.6 + noise2D(regionId + 70, 700, seed + regionId * 89 + 400) * 0.4,
+            density: 0.4 + noise2D(regionId + 70, 700, seed + regionId * 89 + 400) * 0.4,
             hue: (hue % 1 + 1) % 1,
             saturation: 0.4 + noise2D(regionId + 80, 800, seed + regionId * 97 + 400) * 0.4,
             rotation: noise2D(regionId + 90, 900, seed + regionId * 101 + 400) * Math.PI * 2,
-            strength: 0.5 + noise2D(regionId + 100, 1000, seed + regionId * 109 + 400) * 0.5,
+            strength: 0.4 + noise2D(regionId + 100, 1000, seed + regionId * 109 + 400) * 0.4,
           });
           regionId++;
         }
@@ -676,13 +786,13 @@ function composeReactionDiffusion({ complexity, scale, seed }) {
     }
   }
 
-  // Negative space: inactive grid areas
-  const negCount = 1 + Math.floor(complexity * 2);
+  // Negative space
+  const negCount = 2 + Math.floor(complexity * 3);
   for (let i = 0; i < negCount; i++) {
     negativeSpace.push({
       cx: noise2D(i + 200, 200, seed + i * 113 + 450),
       cy: noise2D(i + 210, 400, seed + i * 127 + 450),
-      radius: 0.06 + noise2D(i + 220, 600, seed + i * 131 + 450) * 0.1,
+      radius: 0.05 + noise2D(i + 220, 600, seed + i * 131 + 450) * 0.1,
     });
   }
 
